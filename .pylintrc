@@ -1,2 +1,5 @@
 [TYPECHECK]
 extension-pkg-allow-list = lxml.etree
+
+[MESSAGES CONTROL]
+disable = too-many-arguments, too-many-positional-arguments

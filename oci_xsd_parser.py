@@ -2,13 +2,75 @@
 Broadworks OCI XSD Parser
 This script parses the Broadworks OCI XSD schema and generates JSON representations
 """
+
 import json
 import xml.etree.ElementTree as ET
+import sqlite3
 from xmlschema import XMLSchema
 from lxml import etree
 
+schema = XMLSchema("Rel_2024_10_260_OCISchemaAS/OCISchemaAS.xsd")
 
-schema = XMLSchema("OCISchemaAS.xsd")
+
+def initialize_db(db_path="oci_schema.db"):
+    """Initializes the SQLite database and creates necessary tables.
+    Args:
+        db_path: The path to the SQLite database file.
+    Returns:
+        A tuple containing the database connection and cursor.
+    """
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.executescript("""
+    CREATE TABLE IF NOT EXISTS oci_types (
+        name TEXT PRIMARY KEY,
+        kind TEXT
+    );
+    CREATE TABLE IF NOT EXISTS oci_docs (
+        name TEXT PRIMARY KEY REFERENCES oci_types(name),
+        documentation TEXT
+    );
+    CREATE TABLE IF NOT EXISTS oci_raw_schema (
+        name TEXT PRIMARY KEY REFERENCES oci_types(name),
+        xml TEXT
+    );
+    CREATE TABLE IF NOT EXISTS oci_parameters (
+        name TEXT PRIMARY KEY REFERENCES oci_types(name),
+        parameters TEXT
+    );
+    """)
+    return conn, cur
+
+
+def insert_type(cur, name, kind, doc, raw_xml, params):
+    """
+    Inserts or updates a type in the database.
+    Args:
+        cur: The database cursor.
+        name: The name of the type.
+        kind: The kind of the type (e.g., complexType, simpleType).
+        doc: Documentation for the type.
+        raw_xml: Raw XML representation of the type.
+        params: Parameters of the type as a list of dictionaries.
+    """
+    cur.execute(
+        "INSERT OR REPLACE INTO oci_types (name, kind) VALUES (?, ?)", (name, kind)
+    )
+    if doc:
+        cur.execute(
+            "INSERT OR REPLACE INTO oci_docs (name, documentation) VALUES (?, ?)",
+            (name, doc),
+        )
+    if raw_xml:
+        cur.execute(
+            "INSERT OR REPLACE INTO oci_raw_schema (name, xml) VALUES (?, ?)",
+            (name, raw_xml),
+        )
+    cur.execute(
+        "INSERT OR REPLACE INTO oci_parameters (name, parameters) VALUES (?, ?)",
+        (name, json.dumps(params)),
+    )
+
 
 def get_documentation(xsd_type):
     """
@@ -25,6 +87,7 @@ def get_documentation(xsd_type):
             return doc_elem.text.strip()
     return None
 
+
 def get_raw_schema(xsd_type):
     """
     Converts the XSD type element to a string representation.
@@ -35,12 +98,11 @@ def get_raw_schema(xsd_type):
     """
     if xsd_type.elem is not None:
         try:
-            return etree.tostring(
-                xsd_type.elem, pretty_print=True, encoding="unicode"
-            )
+            return etree.tostring(xsd_type.elem, pretty_print=True, encoding="unicode")
         except TypeError:
             return ET.tostring(xsd_type.elem, encoding="unicode")
     return None
+
 
 def build_type_tree(xsd_type, seen=None):
     """
@@ -50,7 +112,7 @@ def build_type_tree(xsd_type, seen=None):
         xsd_type: The XSD type to parse.
         seen: A list to track already processed types to avoid circular references.
     Returns:
-        A dictionary representing the type, its parameters, documentation, and raw schema.  
+        A dictionary representing the type, its parameters, documentation, and raw schema.
     """
     if seen is None:
         seen = []
@@ -104,15 +166,20 @@ def build_example(parameters):
             example[param["name"]] = ""
     return example
 
+
+def main():
+    """main logic to parse the XSD schema and populate the database."""
+    conn, cur = initialize_db()
+    for name, xsd_type in schema.types.items():
+        kind = "complexType" if hasattr(xsd_type, "content") else "simpleType"
+        doc = get_documentation(xsd_type)
+        raw_xml = get_raw_schema(xsd_type)
+        params = build_type_tree(xsd_type)["parameters"]
+        insert_type(cur, name, kind, doc, raw_xml, params)
+
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
-    for name in schema.types:
-        if "Request" in name or "Response" in name:
-            print(name)
-            result = build_type_tree(schema.types.get(name))
-            with open(f"output/{name}.json", "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2, ensure_ascii=False)
-    # command = 'UserModifyRequest22'
-    # result = build_type_tree(schema.types.get(command))
-    # example = build_example(result["parameters"])
-    # print(f"Example for {command}:")
-    # print(json.dumps(example, indent=2, ensure_ascii=False))
+    main()
